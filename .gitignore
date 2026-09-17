@@ -18,3 +18,4 @@ DerivedDataCache/
 Intermediate/
 Saved/
 *.backup*
+target/
