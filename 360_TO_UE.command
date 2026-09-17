@@ -340,14 +340,41 @@ END_COLMAP=$(date +%s)
 COLMAP_SEC=$((END_COLMAP - START_COLMAP))
 COLMAP_MIN=$((COLMAP_SEC / 60))
 
+# ---------- build Brush-compatible dataset ----------
 DATASET="$OUTPUT_ROOT/brush-dataset"
 
-if [ ! -d "$DATASET" ]; then
-    echo ""
-    echo "ERROR: brush-dataset was not generated."
-    echo "$DATASET"
+echo ""
+echo "Preparing Brush dataset..."
+
+# panorama_sfm creates the COLMAP reconstruction but does not create
+# the Brush wrapper directory, so build it here.
+rm -rf "$DATASET"
+mkdir -p "$DATASET"
+
+if [ ! -d "$OUTPUT_ROOT/images" ]; then
+    echo "ERROR: COLMAP images directory not found:"
+    echo "$OUTPUT_ROOT/images"
     exit 1
 fi
+
+if [ ! -d "$OUTPUT_ROOT/sparse/0" ]; then
+    echo "ERROR: COLMAP sparse model not found:"
+    echo "$OUTPUT_ROOT/sparse/0"
+    exit 1
+fi
+
+ln -s "$OUTPUT_ROOT/images" "$DATASET/images"
+ln -s "$OUTPUT_ROOT/sparse" "$DATASET/sparse"
+
+cat > "$DATASET/README.txt" <<EOF
+Brush-ready COLMAP dataset
+
+Selected source model: $OUTPUT_ROOT/sparse/0
+Panoramas: $ACTUAL_PANOS
+EOF
+
+echo "Brush dataset ready:"
+echo "$DATASET"
 
 echo ""
 echo "COLMAP complete: ${COLMAP_MIN} min"
