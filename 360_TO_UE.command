@@ -1,0 +1,342 @@
+#!/bin/bash
+set -e
+
+PIPELINE="$HOME/Downloads/colmap-360-rig-pipeline"
+BRUSH="/Applications/brush-app-aarch64-apple-darwin/brush_app"
+
+clear
+echo "=============================================="
+echo "          360 → UE PREVIS V2"
+echo "=============================================="
+echo ""
+
+# ---------- dependency checks ----------
+for cmd in ffmpeg ffprobe python3; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo "ERROR: $cmd not found."
+        read -n 1 -s -r -p "Press any key to close..."
+        exit 1
+    fi
+done
+
+if [ ! -d "$PIPELINE" ]; then
+    echo "ERROR: Pipeline not found:"
+    echo "$PIPELINE"
+    exit 1
+fi
+
+if [ ! -x "$BRUSH" ]; then
+    echo "ERROR: Brush not found:"
+    echo "$BRUSH"
+    exit 1
+fi
+
+source "$PIPELINE/.venv/bin/activate"
+
+# ---------- video input ----------
+if [ -n "$1" ]; then
+    VIDEO="$1"
+else
+    echo "Drag your Insta360 Studio exported MP4/MOV here:"
+    echo ""
+    read -r VIDEO
+    VIDEO="${VIDEO%\"}"
+    VIDEO="${VIDEO#\"}"
+    VIDEO="${VIDEO%\'}"
+    VIDEO="${VIDEO#\'}"
+fi
+
+if [ ! -f "$VIDEO" ]; then
+    echo "ERROR: Video not found:"
+    echo "$VIDEO"
+    exit 1
+fi
+
+BASENAME="$(basename "$VIDEO")"
+NAME="${BASENAME%.*}"
+
+# ---------- inspect source ----------
+DURATION=$(ffprobe -v error -show_entries format=duration \
+    -of default=noprint_wrappers=1:nokey=1 "$VIDEO")
+
+WIDTH=$(ffprobe -v error -select_streams v:0 \
+    -show_entries stream=width \
+    -of csv=s=x:p=0 "$VIDEO")
+
+HEIGHT=$(ffprobe -v error -select_streams v:0 \
+    -show_entries stream=height \
+    -of csv=s=x:p=0 "$VIDEO")
+
+SOURCE_FPS=$(ffprobe -v error -select_streams v:0 \
+    -show_entries stream=r_frame_rate \
+    -of default=noprint_wrappers=1:nokey=1 "$VIDEO")
+
+DURATION_INT=$(printf "%.0f" "$DURATION")
+
+MINUTES=$((DURATION_INT / 60))
+SECONDS=$((DURATION_INT % 60))
+
+# ---------- 2:1 validation ----------
+EXPECTED_WIDTH=$((HEIGHT * 2))
+
+clear
+echo "=============================================="
+echo "          360 → UE PREVIS PREFLIGHT"
+echo "=============================================="
+echo ""
+echo "File:        $BASENAME"
+printf "Duration:    %02d:%02d\n" "$MINUTES" "$SECONDS"
+echo "Resolution:  ${WIDTH} × ${HEIGHT}"
+echo "Source FPS:  $SOURCE_FPS"
+
+if [ "$WIDTH" -ne "$EXPECTED_WIDTH" ]; then
+    echo ""
+    echo "⚠ WARNING: Input is not 2:1 equirectangular."
+    echo "Expected width: $EXPECTED_WIDTH"
+    echo "Actual width:   $WIDTH"
+    echo ""
+    echo "Export a full 360° 2:1 video from Insta360 Studio."
+    read -n 1 -s -r -p "Press any key to close..."
+    exit 1
+else
+    echo "360 Format:  2:1 ✓"
+fi
+
+echo ""
+echo "Choose preset:"
+echo ""
+echo "[1] FAST"
+echo "    ~120 panoramas"
+echo "    Quick blocking / rough scout"
+echo ""
+echo "[2] NORMAL  ← Recommended"
+echo "    ~250 panoramas"
+echo "    DP previs / CineCamera"
+echo ""
+echo "[3] QUALITY"
+echo "    ~500 panoramas"
+echo "    Higher-detail location"
+echo ""
+read -r -p "Preset [1/2/3]: " PRESET
+
+case "$PRESET" in
+    1)
+        LABEL="FAST"
+        TARGET=120
+        BRUSH_STEPS=7500
+        BRUSH_RES=1920
+        ;;
+    3)
+        LABEL="QUALITY"
+        TARGET=500
+        BRUSH_STEPS=20000
+        BRUSH_RES=3072
+        ;;
+    *)
+        LABEL="NORMAL"
+        TARGET=250
+        BRUSH_STEPS=15000
+        BRUSH_RES=2560
+        ;;
+esac
+
+# ---------- calculate adaptive extraction FPS ----------
+EXTRACT_FPS=$(python3 - <<PY
+duration=float("$DURATION")
+target=float("$TARGET")
+fps=target/duration
+fps=max(0.05, fps)
+print(f"{fps:.4f}")
+PY
+)
+
+PANOS=$(python3 - <<PY
+duration=float("$DURATION")
+fps=float("$EXTRACT_FPS")
+print(round(duration*fps))
+PY
+)
+
+VIEWS=$((PANOS * 12))
+
+# ---------- initial ETA model ----------
+# Conservative estimates calibrated from this M3 Pro workflow.
+BRUSH_MIN=$(python3 - <<PY
+steps=$BRUSH_STEPS
+res=$BRUSH_RES
+base=76.25
+estimate=base*(steps/15000)*(res/2560)**1.35
+print(round(estimate))
+PY
+)
+
+COLMAP_LOW=$(python3 - <<PY
+views=$VIEWS
+# deliberately conservative nonlinear estimate
+print(max(5, round(8*(views/276)**1.25)))
+PY
+)
+
+COLMAP_HIGH=$(python3 - <<PY
+views=$VIEWS
+print(max(10, round(12*(views/276)**1.35)))
+PY
+)
+
+TOTAL_LOW=$((COLMAP_LOW + BRUSH_MIN))
+TOTAL_HIGH=$((COLMAP_HIGH + BRUSH_MIN))
+
+echo ""
+echo "=============================================="
+echo "                 PREFLIGHT"
+echo "=============================================="
+echo ""
+echo "Preset:             $LABEL"
+echo "Adaptive FPS:       $EXTRACT_FPS"
+echo "Target panoramas:   ~$PANOS"
+echo "Virtual views:      ~$VIEWS"
+echo ""
+echo "Brush:"
+echo "  Steps:            $BRUSH_STEPS"
+echo "  Max resolution:   $BRUSH_RES"
+echo ""
+echo "Estimated COLMAP:   ${COLMAP_LOW}–${COLMAP_HIGH} min"
+echo "Estimated Brush:    ~${BRUSH_MIN} min"
+echo "----------------------------------------------"
+echo "Estimated total:    ~${TOTAL_LOW}–${TOTAL_HIGH} min"
+echo ""
+
+if [ "$VIEWS" -gt 6000 ]; then
+    echo "⚠ LARGE DATASET"
+    echo "Consider NORMAL or FAST unless you need extra detail."
+    echo ""
+fi
+
+read -r -p "Start processing? [Y/N]: " GO
+
+case "$GO" in
+    y|Y) ;;
+    *)
+        echo "Cancelled."
+        exit 0
+        ;;
+esac
+
+# ---------- workspace ----------
+WORK_VIDEO="$PIPELINE/${NAME}_V2.mp4"
+
+echo ""
+echo "Preparing workspace..."
+
+if [ "$VIDEO" != "$WORK_VIDEO" ]; then
+    cp "$VIDEO" "$WORK_VIDEO"
+fi
+
+FRAMES_DIR="$PIPELINE/${NAME}_V2-frames"
+OUTPUT_ROOT="$PIPELINE/${NAME}_V2-colmap"
+OUTPUT_DIR="$(dirname "$VIDEO")/UE_PREVIS_OUTPUT"
+
+mkdir -p "$FRAMES_DIR"
+mkdir -p "$OUTPUT_DIR"
+
+# ---------- extract panoramas ----------
+echo ""
+echo "=============================================="
+echo "1/3  EXTRACTING 360 PANORAMAS"
+echo "=============================================="
+echo ""
+echo "Target: ~$PANOS panoramas"
+
+rm -f "$FRAMES_DIR"/frame_*.jpg
+
+ffmpeg -hide_banner -y \
+    -i "$WORK_VIDEO" \
+    -vf "fps=$EXTRACT_FPS" \
+    -q:v 2 \
+    "$FRAMES_DIR/frame_%06d.jpg"
+
+ACTUAL_PANOS=$(find "$FRAMES_DIR" -name "frame_*.jpg" | wc -l | tr -d ' ')
+
+echo ""
+echo "Extracted: $ACTUAL_PANOS panoramas"
+
+# ---------- COLMAP ----------
+echo ""
+echo "=============================================="
+echo "2/3  COLMAP 360 RECONSTRUCTION"
+echo "=============================================="
+echo ""
+
+START_COLMAP=$(date +%s)
+
+python "$PIPELINE/panorama_sfm_4_1_1.py" \
+    --input_image_path "$FRAMES_DIR" \
+    --output_path "$OUTPUT_ROOT" \
+    --matching sequential \
+    --mapper incremental \
+    --pano_render_type perspective_overlapping
+
+END_COLMAP=$(date +%s)
+COLMAP_SEC=$((END_COLMAP - START_COLMAP))
+COLMAP_MIN=$((COLMAP_SEC / 60))
+
+DATASET="$OUTPUT_ROOT/brush-dataset"
+
+if [ ! -d "$DATASET" ]; then
+    echo ""
+    echo "ERROR: brush-dataset was not generated."
+    echo "$DATASET"
+    exit 1
+fi
+
+echo ""
+echo "COLMAP complete: ${COLMAP_MIN} min"
+
+# ---------- Brush ----------
+echo ""
+echo "=============================================="
+echo "3/3  BRUSH TRAINING"
+echo "=============================================="
+echo ""
+
+OUTPUT_NAME="${NAME}_${LABEL}_UE.ply"
+
+START_BRUSH=$(date +%s)
+
+"$BRUSH" \
+    --total-steps "$BRUSH_STEPS" \
+    --max-resolution "$BRUSH_RES" \
+    --export-path "$OUTPUT_DIR" \
+    --export-name "$OUTPUT_NAME" \
+    "$DATASET"
+
+END_BRUSH=$(date +%s)
+BRUSH_SEC=$((END_BRUSH - START_BRUSH))
+BRUSH_MIN_ACTUAL=$((BRUSH_SEC / 60))
+
+TOTAL_SEC=$((END_BRUSH - START_COLMAP))
+TOTAL_MIN=$((TOTAL_SEC / 60))
+
+echo ""
+echo "=============================================="
+echo "             PREVIS COMPLETE ✓"
+echo "=============================================="
+echo ""
+echo "COLMAP:   ${COLMAP_MIN} min"
+echo "Brush:    ${BRUSH_MIN_ACTUAL} min"
+echo "Total:    ${TOTAL_MIN} min"
+echo ""
+echo "Output:"
+echo "$OUTPUT_DIR/$OUTPUT_NAME"
+echo ""
+echo "UE:"
+echo "1. Open GaussianScout"
+echo "2. Drag PLY into Content Drawer"
+echo "3. Add HarmonyActor"
+echo "4. Calibrate against 2.5 m reference"
+echo "5. Start CineCamera previs"
+echo ""
+
+open "$OUTPUT_DIR"
+
+read -n 1 -s -r -p "Press any key to close..."
