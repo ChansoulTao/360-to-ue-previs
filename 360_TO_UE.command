@@ -272,7 +272,7 @@ START_COLMAP=$(date +%s)
 python "$PIPELINE/panorama_sfm_4_1_1.py" \
     --input_image_path "$FRAMES_DIR" \
     --output_path "$OUTPUT_ROOT" \
-    --matching sequential \
+    --matcher sequential \
     --mapper incremental \
     --pano_render_type perspective_overlapping
 
