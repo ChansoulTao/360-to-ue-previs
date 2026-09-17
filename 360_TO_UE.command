@@ -4,6 +4,50 @@ set -e
 PIPELINE="$HOME/Downloads/colmap-360-rig-pipeline"
 BRUSH="/Applications/brush-app-aarch64-apple-darwin/brush_app"
 
+# ---------- local private config ----------
+CONFIG_FILE="$HOME/.360-to-ue-previs.conf"
+
+if [ -f "$CONFIG_FILE" ]; then
+    source "$CONFIG_FILE"
+fi
+
+# ---------- ntfy notifications ----------
+NTFY_SERVER="${NTFY_SERVER:-https://ntfy.sh}"
+NTFY_TOPIC="${NTFY_TOPIC:-}"
+
+notify_ntfy() {
+    [ -z "$NTFY_TOPIC" ] && return 0
+
+    curl -fsS \
+        --connect-timeout 5 \
+        --max-time 10 \
+        -H "Title: $1" \
+        -H "Priority: $2" \
+        -H "Tags: $3" \
+        -d "$4" \
+        "$NTFY_SERVER/$NTFY_TOPIC" \
+        >/dev/null 2>&1 || true
+}
+
+notify_failure() {
+    code=$?
+    trap - ERR
+
+    notify_ntfy \
+        "360 to UE Previs Failed" \
+        "high" \
+        "warning" \
+        "Job: ${NAME:-unknown}
+Preset: ${LABEL:-unknown}
+Exit code: $code
+
+Check the Mac Terminal for details."
+
+    exit "$code"
+}
+
+trap notify_failure ERR
+
 clear
 echo "=============================================="
 echo "          360 → UE PREVIS V2"
@@ -336,6 +380,21 @@ echo "3. Add HarmonyActor"
 echo "4. Calibrate against 2.5 m reference"
 echo "5. Start CineCamera previs"
 echo ""
+
+notify_ntfy \
+    "360 to UE Previs Complete" \
+    "default" \
+    "white_check_mark,movie_camera" \
+    "Job: $NAME
+Preset: $LABEL
+
+COLMAP: ${COLMAP_MIN} min
+Brush: ${BRUSH_MIN_ACTUAL} min
+Total: ${TOTAL_MIN} min
+
+Output: $OUTPUT_NAME
+
+Ready for Unreal Engine."
 
 open "$OUTPUT_DIR"
 
