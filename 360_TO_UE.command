@@ -266,6 +266,22 @@ case "$GO" in
         ;;
 esac
 
+notify_ntfy \
+    "360 to UE Previs Started" \
+    "default" \
+    "rocket,movie_camera" \
+    "Job: $NAME
+Preset: $LABEL
+
+Panoramas: ~$PANOS
+Virtual views: ~$VIEWS
+
+Brush: $BRUSH_STEPS steps @ $BRUSH_RES px
+
+Estimated total:
+~$((COLMAP_LOW + BRUSH_MIN))-$((COLMAP_HIGH + BRUSH_MIN)) min"
+
+
 # ---------- workspace ----------
 WORK_VIDEO="$PIPELINE/${NAME}_V2.mp4"
 
@@ -339,6 +355,18 @@ echo "COLMAP complete: ${COLMAP_MIN} min"
 # ---------- Brush ----------
 echo ""
 echo "=============================================="
+notify_ntfy \
+    "COLMAP Complete - Brush Starting" \
+    "default" \
+    "white_check_mark,computer" \
+    "Job: $NAME
+Preset: $LABEL
+
+COLMAP: ${COLMAP_MIN} min
+
+Brush starting:
+$BRUSH_STEPS steps @ $BRUSH_RES px"
+
 echo "3/3  BRUSH TRAINING"
 echo "=============================================="
 echo ""
