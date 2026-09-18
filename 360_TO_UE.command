@@ -341,39 +341,49 @@ COLMAP_SEC=$((END_COLMAP - START_COLMAP))
 COLMAP_MIN=$((COLMAP_SEC / 60))
 
 # ---------- build Brush-compatible dataset ----------
+echo ""
+echo "Preparing Brush-compatible dataset..."
+
+# IMPORTANT:
+# Do not symlink OUTPUT_ROOT/sparse directly into Brush.
+# reconstruct_360.py selects the best COLMAP model and rewrites it
+# into a Brush-compatible sparse model using PyCOLMAP.
+
+rm -rf "$OUTPUT_ROOT/brush-dataset"
+
+"$PIPELINE/.venv/bin/python" - "$OUTPUT_ROOT" <<'PYDATASET'
+import sys
+from pathlib import Path
+
+pipeline = Path.home() / "Downloads/colmap-360-rig-pipeline"
+sys.path.insert(0, str(pipeline))
+
+from reconstruct_360 import prepare_brush_dataset
+
+output = Path(sys.argv[1]).expanduser().resolve()
+brush_dir = prepare_brush_dataset(output)
+
+print()
+print("Brush dataset ready:")
+print(brush_dir)
+PYDATASET
+
 DATASET="$OUTPUT_ROOT/brush-dataset"
 
+if [ ! -d "$DATASET" ]; then
+    echo "ERROR: Brush dataset creation failed:"
+    echo "$DATASET"
+    exit 1
+fi
+
+if [ ! -f "$DATASET/sparse/0/cameras.bin" ]; then
+    echo "ERROR: Brush sparse model is incomplete:"
+    echo "$DATASET/sparse/0"
+    exit 1
+fi
+
 echo ""
-echo "Preparing Brush dataset..."
-
-# panorama_sfm creates the COLMAP reconstruction but does not create
-# the Brush wrapper directory, so build it here.
-rm -rf "$DATASET"
-mkdir -p "$DATASET"
-
-if [ ! -d "$OUTPUT_ROOT/images" ]; then
-    echo "ERROR: COLMAP images directory not found:"
-    echo "$OUTPUT_ROOT/images"
-    exit 1
-fi
-
-if [ ! -d "$OUTPUT_ROOT/sparse/0" ]; then
-    echo "ERROR: COLMAP sparse model not found:"
-    echo "$OUTPUT_ROOT/sparse/0"
-    exit 1
-fi
-
-ln -s "$OUTPUT_ROOT/images" "$DATASET/images"
-ln -s "$OUTPUT_ROOT/sparse" "$DATASET/sparse"
-
-cat > "$DATASET/README.txt" <<EOF
-Brush-ready COLMAP dataset
-
-Selected source model: $OUTPUT_ROOT/sparse/0
-Panoramas: $ACTUAL_PANOS
-EOF
-
-echo "Brush dataset ready:"
+echo "Brush dataset verified:"
 echo "$DATASET"
 
 echo ""
